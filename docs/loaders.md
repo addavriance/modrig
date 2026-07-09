@@ -1,0 +1,77 @@
+# Как работают загрузчики
+
+Все три загрузчика в итоге дают **launch-профиль** - json с `mainClass`, `libraries` и
+`arguments` (game/jvm), который мерджится с vanilla version json через `inheritsFrom`
+(`app/services/loaders/common.py:merge_with_vanilla`). Дальше общий для всех `launch.py`
+подставляет `${auth_player_name}`, `${classpath}` и т.п. и собирает финальную java-команду.
+На этом сходство заканчивается - Fabric и Forge/NeoForge устроены принципиально по-разному
+внутри, и большая часть боли была именно в этом.
+
+## Fabric - простой случай
+
+`meta.fabricmc.net` отдаёt готовый launch-профиль (`GET /v2/versions/loader/{mc}/{loader}/profile/json`)
+без всякого установщика. Профиль ссылается на реальные maven-координаты (`fabric-loader`,
+`intermediary`, `asm`, `sponge-mixin`) с нормальными URL - их просто качаем в общий
+`cache/libraries/` и кладём все на classpath (`-cp`), как и обычные vanilla-библиотеки.
+Никакого `library_directory` не нужно. Это `include_child_libraries=True` в `merge_with_vanilla`.
+
+## Forge / NeoForge - installer.jar
+
+Тут нет простого json - есть `forge-<mc>-<version>-installer.jar` (для NeoForge -
+`neoforge-<version>-installer.jar`, тот же формат, просто другой maven-репозиторий:
+`maven.neoforged.net`). Установщик умеет headless-режим: `java -jar installer.jar --installClient <dir>`.
+
+Три нюанса, из-за которых пришлось повозиться:
+
+1. **Установщику нужен фейковый `.minecraft`.** Без `launcher_profiles.json` в целевой
+   директории он падает с `There is no minecraft launcher profile in ...`. Кладём туда
+   минимальный стаб перед запуском (`common.py:_LAUNCHER_PROFILES_STUB`).
+2. **Установщик пишет свой `versions/<id>/<id>.json` до того, как реально допатчит клиентские
+   jar'ы.** Если сетевая загрузка внутри установщика (например, mojmaps) обрывается, json
+   уже есть на диске, но патченые jar'ы - нет. Проверять "уже установлено" по наличию json
+   недостаточно - используем отдельный маркер `.modrig_install_complete`, который пишем
+   только после `exit code == 0` (`common.py:run_installer`/`ensure_installed`).
+3. **Часть classpath вообще не описана в json.** У Forge/NeoForge реальный игровой jar
+   (`client-*-srg.jar`, `client-*-extra.jar`, `forge-*-client.jar`/`neoforge-*-client.jar`) -
+   результат локального бинарного патчинга внутри установщика, у него просто нет download URL.
+   Профиль объявляет только вспомогательные библиотеки (`bootstraplauncher`, `securejarhandler`,
+   `eventbus`, `fmlloader`, `mixin` и т.д.) - их кладём на classpath как обычно
+   (`include_child_libraries=True`, как и у Fabric). А патченые jar'ы находит **сам**
+   `cpw.mods.bootstraplauncher.BootstrapLauncher` при старте, сканируя директорию, на которую
+   указывает `-DlibraryDirectory=${library_directory}` - это путь к `libraries/` конкретно
+   внутри `forge_installs/<mc>-<version>/` (не в общий shared-кэш!), потому что именно там
+   установщик их создал.
+
+   Мы **сознательно не** кладём вообще все файлы из этой директории на classpath (было
+   соблазнительно - искали же именно так, "чтобы наверняка"), потому что там же лежат jar'ы
+   инструментов самого установщика (`ForgeAutoRenamingTool` и т.п.), которые тащат в себе
+   copy ASM - и это ломает JPMS split-package resolution (`Modules X and Y export package Z`).
+
+`library_directory` и `classpath_separator` - два плейсхолдера, которых нет в vanilla json,
+но которые использует `-p` (module path) аргумент в forge/neoforge json; `launch.py` их
+подставляет всегда, для Fabric они просто не встречаются в шаблоне и ни на что не влияют.
+
+### Дубли в classpath
+
+Vanilla и Forge/NeoForge иногда объявляют одну и ту же библиотеку немного по-разному
+(например Forge пишет `com.google.guava:failureaccess:1.0.1@jar` - с суффиксом `@jar`,
+которого нет в vanilla-варианте того же артефакта). Дедуп по имени координаты это не ловит,
+но обе записи резолвятся в один и тот же файл на диске - и в результате один и тот же путь
+дважды попадал в `-cp`. `BootstrapLauncher` на это падает с `IllegalStateException: Duplicate key`
+(он сам строит `UnionFileSystem` из classpath-записей). Поэтому classpath дедуплицируется по
+итоговому пути файла, а не по имени координаты (`instance_pool.py`, `dict.fromkeys(classpath_jars)`).
+
+## Версии загрузчика по умолчанию
+
+- **Fabric** - берётся первая `stable: true` запись из `meta.fabricmc.net`.
+- **Forge** - `<mc>-recommended`, иначе `<mc>-latest` из `promotions_slim.json`.
+- **NeoForge** - версии там не привязаны к MC явно, только числовым префиксом:
+  MC `1.20.4` → NeoForge `20.4.x`, MC `1.21` → `21.0.x` (patch по умолчанию `0`). Из всех
+  версий с нужным префиксом берётся самая новая **не**-beta, если такая есть.
+
+## Известные ограничения
+
+- Очень старые версии Forge исторически были GUI-only без надёжного headless-режима - если
+  `--installClient` не поддерживается, `run_installer` просто упадёт с текстом вывода
+  установщика в ошибке; отдельного определения диапазона версий пока нет.
+- MS OAuth не реализован - только offline-авторизация (см. `architecture.md`).
