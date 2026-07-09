@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from pathlib import Path
+
+import httpx
+
+from app.config import settings
+
+_download_semaphore = asyncio.Semaphore(settings.max_parallel_downloads)
+
+
+def sha1_of(path: Path) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+async def download_file(client: httpx.AsyncClient, url: str, dest: Path, sha1: str | None = None) -> Path:
+    """Download url to dest, skipping if dest already exists and matches sha1 (or just exists, if no hash given)."""
+    if dest.exists():
+        if sha1 is None or sha1_of(dest) == sha1:
+            return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    async with _download_semaphore:
+        async with client.stream("GET", url, timeout=settings.request_timeout, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            with open(tmp, "wb") as f:
+                async for chunk in resp.aiter_bytes(1 << 16):
+                    f.write(chunk)
+    tmp.replace(dest)
+    return dest
+
+
+def new_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(headers={"User-Agent": "modrig/0.1 (mod test service)"})

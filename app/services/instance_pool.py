@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import shutil
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from app.config import settings
+from app.db import get_db
+from app.models import CreateInstanceRequest, InstanceInfo, InstanceStatus, Loader
+from app.services import fabric, history, launch, mojang, modrinth
+from app.services.auth import build_offline_profile
+from app.services.http import new_client
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class RuntimeInstance:
+    id: str
+    request: CreateInstanceRequest
+    status: InstanceStatus = InstanceStatus.preparing
+    created_at: str = field(default_factory=_now)
+    finished_at: str | None = None
+    exit_code: int | None = None
+    error: str | None = None
+    resolved_loader_version: str | None = None
+    process: asyncio.subprocess.Process | None = None
+    expected_stop: bool = False
+
+    @property
+    def dir(self) -> Path:
+        return settings.instances_dir / self.id
+
+    def to_info(self) -> InstanceInfo:
+        return InstanceInfo(
+            id=self.id,
+            mc_version=self.request.mc_version,
+            loader=self.request.loader,
+            loader_version=self.resolved_loader_version or self.request.loader_version,
+            ephemeral=self.request.ephemeral,
+            status=self.status,
+            created_at=self.created_at,
+            finished_at=self.finished_at,
+            exit_code=self.exit_code,
+            error=self.error,
+        )
+
+
+class InstancePool:
+    def __init__(self, max_concurrent: int) -> None:
+        self._instances: dict[str, RuntimeInstance] = {}
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+
+    def get(self, instance_id: str) -> RuntimeInstance | None:
+        return self._instances.get(instance_id)
+
+    def list(self) -> list[RuntimeInstance]:
+        return sorted(self._instances.values(), key=lambda i: i.created_at, reverse=True)
+
+    async def create(self, req: CreateInstanceRequest) -> RuntimeInstance:
+        instance = RuntimeInstance(id=str(uuid.uuid4()), request=req)
+        self._instances[instance.id] = instance
+        await self._persist(instance)
+
+        asyncio.create_task(self._run(instance.id))
+        return instance
+
+    async def stop(self, instance_id: str) -> bool:
+        instance = self.get(instance_id)
+        if instance is None or instance.process is None:
+            return False
+        instance.expected_stop = True
+        try:
+            instance.process.terminate()
+        except ProcessLookupError:
+            pass
+        return True
+
+    async def delete(self, instance_id: str) -> bool:
+        instance = self.get(instance_id)
+        if instance is None:
+            return False
+        if instance.status in (InstanceStatus.preparing, InstanceStatus.downloading, InstanceStatus.running):
+            return False
+        if instance.dir.exists():
+            shutil.rmtree(instance.dir, ignore_errors=True)
+        del self._instances[instance_id]
+        return True
+
+    async def _persist(self, instance: RuntimeInstance) -> None:
+        db = get_db()
+        await db.execute(
+            """INSERT INTO runs (id, mc_version, loader, loader_version, mods_json, ephemeral, status,
+                                  created_at, finished_at, exit_code, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   loader_version=excluded.loader_version, status=excluded.status,
+                   finished_at=excluded.finished_at, exit_code=excluded.exit_code, error=excluded.error""",
+            (
+                instance.id,
+                instance.request.mc_version,
+                instance.request.loader.value,
+                instance.resolved_loader_version or instance.request.loader_version,
+                json.dumps([m.model_dump() for m in instance.request.mods]),
+                int(instance.request.ephemeral),
+                instance.status.value,
+                instance.created_at,
+                instance.finished_at,
+                instance.exit_code,
+                instance.error,
+            ),
+        )
+        await db.commit()
+
+    async def _set_status(self, instance: RuntimeInstance, status: InstanceStatus, **fields) -> None:
+        instance.status = status
+        for key, value in fields.items():
+            setattr(instance, key, value)
+        await self._persist(instance)
+
+    async def _run(self, instance_id: str) -> None:
+        instance = self._instances[instance_id]
+        try:
+            await self._prepare_and_launch(instance)
+        except Exception as exc:  # noqa: BLE001 - surface any failure on the instance itself
+            await self._set_status(instance, InstanceStatus.failed, error=str(exc), finished_at=_now())
+
+    async def _prepare_and_launch(self, instance: RuntimeInstance) -> None:
+        req = instance.request
+        mc_version = req.mc_version
+
+        if req.loader != Loader.fabric:
+            raise NotImplementedError(
+                f"Loader '{req.loader.value}' is not implemented yet in v1 (Fabric-only slice);"
+            )
+
+        await self._set_status(instance, InstanceStatus.downloading)
+
+        async with new_client() as client:
+            loader_version = await fabric.resolve_loader_version(client, mc_version, req.loader_version)
+            instance.resolved_loader_version = loader_version
+            await self._persist(instance)
+
+            vanilla_json = await mojang.get_version_json(client, mc_version)
+            fabric_profile = await fabric.get_profile_json(client, mc_version, loader_version)
+            profile = fabric.merge_with_vanilla(vanilla_json, fabric_profile)
+
+            client_jar = await mojang.download_client_jar(client, vanilla_json, mc_version)
+            classpath_jars, native_jars = await mojang.download_libraries(client, profile["libraries"])
+            natives_dir = mojang.extract_natives(native_jars, mc_version)
+            assets_dir = await mojang.download_assets(client, vanilla_json)
+
+            mod_versions = await modrinth.resolve_mods(client, req.mods, mc_version, req.loader.value)
+            mod_files = await modrinth.download_mod_files(client, mod_versions)
+
+            await self._launch(instance, profile, mc_version, client_jar, classpath_jars, natives_dir, assets_dir, mod_files)
+
+    async def _launch(
+        self,
+        instance: RuntimeInstance,
+        profile: dict,
+        mc_version: str,
+        client_jar,
+        classpath_jars,
+        natives_dir,
+        assets_dir,
+        mod_files,
+    ) -> None:
+        instance_dir = instance.dir
+        mods_dir = instance_dir / "mods"
+
+        for sub in ("mods", "saves", "config"):
+            (instance_dir / sub).mkdir(parents=True, exist_ok=True)
+
+        for filename, cached_path in mod_files:
+            shutil.copy2(cached_path, mods_dir / filename)
+
+        auth = build_offline_profile(username=f"Tester{instance.id[:8]}")
+
+        command = launch.build_command(
+            profile=profile,
+            mc_version=mc_version,
+            instance_dir=instance_dir,
+            natives_dir=natives_dir,
+            assets_dir=assets_dir,
+            classpath_jars=classpath_jars,
+            client_jar=client_jar,
+            auth=auth,
+        )
+
+        log_file_path = history.log_path(instance.id)
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        async with self._semaphore:
+            await self._set_status(instance, InstanceStatus.running)
+            with open(log_file_path, "wb") as log_file:
+                log_file.write(f"[modrig] launch command: {command!r}\n\n".encode("utf-8"))
+                log_file.flush()
+
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=instance_dir,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+
+                instance.process = process
+
+                async def pump_output() -> None:
+                    assert process.stdout is not None
+                    async for line in process.stdout:
+                        log_file.write(line)
+                        log_file.flush()
+
+                await asyncio.gather(pump_output(), process.wait())
+
+            await self._finalize(instance)
+
+    async def _finalize(self, instance: RuntimeInstance) -> None:
+        process = instance.process
+        exit_code = process.returncode if process else None
+
+        crash_text = history.collect_crash_text(instance.dir)
+        if crash_text:
+            history.crash_path(instance.id).write_text(crash_text, encoding="utf-8")
+
+        if instance.expected_stop:
+            # A supervisor-initiated stop kills the JVM via terminate()/SIGTERM, which almost never
+            # yields exit code 0 (Java has no window to cleanly click "quit" on) - what matters for
+            # crash-vs-stop classification is *who* ended the process, not its raw exit code.
+            status = InstanceStatus.stopped
+        elif exit_code == 0:
+            status = InstanceStatus.exited
+        else:
+            status = InstanceStatus.crashed
+
+        await self._set_status(instance, status, exit_code=exit_code, finished_at=_now())
+
+        if instance.request.ephemeral and instance.dir.exists():
+            shutil.rmtree(instance.dir, ignore_errors=True)
+
+
+pool = InstancePool(max_concurrent=settings.max_concurrent_instances)
