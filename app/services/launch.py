@@ -46,8 +46,11 @@ def build_command(
     client_jar: Path,
     auth: AuthProfile,
     java_bin: str = "java",
+    library_directory: Path | None = None,
+    include_client_jar: bool = True,
 ) -> list[str]:
-    classpath = CLASSPATH_SEP.join(str(p) for p in [*classpath_jars, client_jar])
+    classpath_entries = [*classpath_jars, client_jar] if include_client_jar else list(classpath_jars)
+    classpath = CLASSPATH_SEP.join(str(p) for p in classpath_entries)
 
     values = {
         "auth_player_name": auth.username,
@@ -65,6 +68,8 @@ def build_command(
         "launcher_name": "modrig",
         "launcher_version": "0.1",
         "classpath": classpath,
+        "classpath_separator": CLASSPATH_SEP,
+        "library_directory": str(library_directory) if library_directory else "",
     }
 
     arguments = profile.get("arguments")

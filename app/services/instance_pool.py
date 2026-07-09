@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -11,9 +12,18 @@ from pathlib import Path
 from app.config import settings
 from app.db import get_db
 from app.models import CreateInstanceRequest, InstanceInfo, InstanceStatus, Loader
-from app.services import fabric, history, launch, mojang, modrinth
+from app.services import history, launch, mojang, modrinth
 from app.services.auth import build_offline_profile
 from app.services.http import new_client
+from app.services.loaders import fabric, forge, neoforge
+
+_LOADER_MODULES = {
+    Loader.fabric: fabric,
+    Loader.forge: forge,
+    Loader.neoforge: neoforge,
+}
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -129,37 +139,43 @@ class InstancePool:
         try:
             await self._prepare_and_launch(instance)
         except Exception as exc:  # noqa: BLE001 - surface any failure on the instance itself
-            await self._set_status(instance, InstanceStatus.failed, error=str(exc), finished_at=_now())
+            logger.exception("Instance %s failed", instance_id)
+            message = str(exc) or f"{type(exc).__name__} (see server log for the traceback)"
+            await self._set_status(instance, InstanceStatus.failed, error=message, finished_at=_now())
 
     async def _prepare_and_launch(self, instance: RuntimeInstance) -> None:
         req = instance.request
         mc_version = req.mc_version
-
-        if req.loader != Loader.fabric:
-            raise NotImplementedError(
-                f"Loader '{req.loader.value}' is not implemented yet in v1 (Fabric-only slice);"
-            )
+        loader_module = _LOADER_MODULES[req.loader]
 
         await self._set_status(instance, InstanceStatus.downloading)
 
         async with new_client() as client:
-            loader_version = await fabric.resolve_loader_version(client, mc_version, req.loader_version)
+            loader_version = await loader_module.resolve_loader_version(client, mc_version, req.loader_version)
             instance.resolved_loader_version = loader_version
             await self._persist(instance)
 
             vanilla_json = await mojang.get_version_json(client, mc_version)
-            fabric_profile = await fabric.get_profile_json(client, mc_version, loader_version)
-            profile = fabric.merge_with_vanilla(vanilla_json, fabric_profile)
+            loader_result = await loader_module.prepare(client, vanilla_json, mc_version, loader_version)
+            profile = loader_result.profile
 
             client_jar = await mojang.download_client_jar(client, vanilla_json, mc_version)
             classpath_jars, native_jars = await mojang.download_libraries(client, profile["libraries"])
+            # BootstrapLauncher (Forge/NeoForge) turns every -cp entry into a candidate module and
+            # aborts if the same path appears twice (e.g. vanilla and the loader can both declare
+            # the same artifact under slightly different maven coordinate spellings).
+            classpath_jars = list(dict.fromkeys(classpath_jars))
             natives_dir = mojang.extract_natives(native_jars, mc_version)
             assets_dir = await mojang.download_assets(client, vanilla_json)
 
             mod_versions = await modrinth.resolve_mods(client, req.mods, mc_version, req.loader.value)
             mod_files = await modrinth.download_mod_files(client, mod_versions)
 
-            await self._launch(instance, profile, mc_version, client_jar, classpath_jars, natives_dir, assets_dir, mod_files)
+            await self._launch(
+                instance, profile, mc_version, client_jar, classpath_jars, natives_dir, assets_dir, mod_files,
+                library_directory=loader_result.library_directory or (settings.cache_dir / "libraries"),
+                include_client_jar=loader_result.include_client_jar,
+            )
 
     async def _launch(
         self,
@@ -171,6 +187,8 @@ class InstancePool:
         natives_dir,
         assets_dir,
         mod_files,
+        library_directory,
+        include_client_jar: bool,
     ) -> None:
         instance_dir = instance.dir
         mods_dir = instance_dir / "mods"
@@ -192,6 +210,8 @@ class InstancePool:
             classpath_jars=classpath_jars,
             client_jar=client_jar,
             auth=auth,
+            library_directory=library_directory,
+            include_client_jar=include_client_jar,
         )
 
         log_file_path = history.log_path(instance.id)

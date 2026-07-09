@@ -13,8 +13,15 @@ class Settings(BaseModel):
     mojang_manifest_url: str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
     fabric_meta_url: str = "https://meta.fabricmc.net/v2"
 
+    forge_maven_url: str = "https://maven.minecraftforge.net"
+    forge_promotions_url: str = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+
+    neoforge_maven_url: str = "https://maven.neoforged.net/releases"
+    neoforge_versions_url: str = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge"
+
     request_timeout: float = 60.0
     max_parallel_downloads: int = 24
+    installer_timeout: float = 900.0
 
     @property
     def cache_dir(self) -> Path:

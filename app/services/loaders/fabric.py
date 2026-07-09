@@ -4,6 +4,7 @@ import httpx
 
 from app.config import settings
 from app.services.cache import register_cache_entry
+from app.services.loaders.common import LoaderResult, merge_with_vanilla
 
 
 async def get_loader_versions(client: httpx.AsyncClient, mc_version: str) -> list[dict]:
@@ -47,28 +48,12 @@ async def get_profile_json(client: httpx.AsyncClient, mc_version: str, loader_ve
     return profile
 
 
-def merge_with_vanilla(vanilla: dict, fabric_profile: dict) -> dict:
-    """Merges a Fabric launch profile (which uses "inheritsFrom") with its parent vanilla version json,
-    the same way the official launcher resolves inheritance chains."""
+async def prepare(client: httpx.AsyncClient, vanilla_json: dict, mc_version: str, loader_version: str) -> LoaderResult:
+    """Fabric has no installer step: its launch profile is just a plain JSON describing an
+    ordinary flat classpath (fabric-loader/intermediary/asm/mixin), so it merges directly into
+    the vanilla profile and needs no library_directory or extra jar discovery."""
 
-    merged = dict(vanilla)
-    merged["id"] = fabric_profile.get("id", vanilla.get("id"))
-    merged["mainClass"] = fabric_profile["mainClass"]
+    fabric_profile = await get_profile_json(client, mc_version, loader_version)
+    profile = merge_with_vanilla(vanilla_json, fabric_profile, include_child_libraries=True)
 
-    existing_names = {lib.get("name") for lib in vanilla.get("libraries", [])}
-    merged_libs = list(vanilla.get("libraries", []))
-
-    for lib in fabric_profile.get("libraries", []):
-        if lib.get("name") not in existing_names:
-            merged_libs.append(lib)
-
-    merged["libraries"] = merged_libs
-
-    v_args = vanilla.get("arguments", {})
-    f_args = fabric_profile.get("arguments", {})
-
-    merged["arguments"] = {
-        "game": [*v_args.get("game", []), *f_args.get("game", [])],
-        "jvm": [*v_args.get("jvm", []), *f_args.get("jvm", [])],
-    }
-    return merged
+    return LoaderResult(profile=profile)
