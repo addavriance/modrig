@@ -4,7 +4,13 @@ import httpx
 
 from app.config import settings
 from app.services.cache import register_cache_entry
-from app.services.loaders.common import LoaderResult, ensure_installed, merge_with_vanilla
+from app.services.loaders.common import (
+    LoaderResult,
+    ensure_installed,
+    local_only_library_paths,
+    merge_with_vanilla,
+    uses_module_path,
+)
 
 
 def _mc_version_prefix(mc_version: str) -> str:
@@ -72,8 +78,13 @@ async def prepare(client: httpx.AsyncClient, vanilla_json: dict, mc_version: str
         install_dir / "versions" / version_id / f"{version_id}.json",
     )
 
+    extra_classpath_jars = (
+        [] if uses_module_path(neoforge_profile) else local_only_library_paths(neoforge_profile, install_dir)
+    )
+
     return LoaderResult(
         profile=profile,
         library_directory=install_dir / "libraries",
         include_client_jar=False,
+        extra_classpath_jars=extra_classpath_jars,
     )

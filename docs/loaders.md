@@ -44,11 +44,15 @@
    загрузочного профиля он есть всегда, у обычного vanilla version.json - никогда), и только
    если такой не нашлось - откатываться на старое сравнение по имени.
 
-   Заодно стало видно, что NeoForge для 26.x сменил bootstrap-механизм: mainClass теперь
-   `net.neoforged.fml.startup.Client`, а не `cpw.mods.bootstraplauncher.BootstrapLauncher` из
-   более старых версий. Пока это не потребовало отдельной обработки - общий механизм
-   мерджа/classpath одинаково работает для обоих, но если у нового класса окажутся другие
-   требования к classpath/module path, им может понадобиться отдельная ветка.
+   Заодно стало видно, что у NeoForge для 26.x другой mainClass - `net.neoforged.fml.startup.Client`,
+   а не `cpw.mods.bootstraplauncher.BootstrapLauncher` из более старых версий. **Это не линейная
+   эволюция "старое → новое"** - Forge и NeoForge разошлись форком на 1.20.1 и с тех пор меняют
+   bootstrap независимо друг от друга и не синхронно по времени: Forge переключился на свой
+   `net.minecraftforge.bootstrap.ForgeBootstrap` уже на 1.20.6 (50.x) - раньше, чем NeoForge вообще
+   отошёл от `BootstrapLauncher` (тот у NeoForge держался как минимум до 1.21.x). Так что "новее"
+   тут не значит "более поздная версия Minecraft" - у каждого проекта свой график. Пока для
+   `net.neoforged.fml.startup.Client` отдельная ветка не понадобилась (см. следующий пункт про
+   `ForgeBootstrap` - если у него окажутся те же требования, возможно понадобится и здесь).
 4. **Часть classpath вообще не описана в json.** У Forge/NeoForge реальный игровой jar
    (`client-*-srg.jar`, `client-*-extra.jar`, `forge-*-client.jar`/`neoforge-*-client.jar`) -
    результат локального бинарного патчинга внутри установщика, у него просто нет download URL.
@@ -102,6 +106,35 @@ securejarhandler, `asm*`, `JarJarFileSystems`) объявлены загрузч
 `<group-path>/<artifactId>`, отбрасывая версию и имя файла). Дальше **и** vanilla-, **и**
 загрузчик-декларированные библиотеки с таким же `group/artifact` (`_artifact_key`) не
 добавляются на `-cp`, независимо от их версии - они всё равно доступны игре через `-p`.
+
+### Второй, несовместимый bootstrap-механизм: ForgeBootstrap
+
+Начиная с Forge 1.20.6 (50.x) mainClass - `net.minecraftforge.bootstrap.ForgeBootstrap`, не
+`cpw.mods.bootstraplauncher.BootstrapLauncher`. У него нет `-p`/`-DlibraryDirectory` вообще (jvm
+args - буквально один `-Djava.net.preferIPv6Addresses=system`). Раскопали декомпиляцией
+`bootstrap-2.1.8.jar` (`net.minecraftforge.bootstrap.Bootstrap.findAllClassPathEntries()`): он
+находит свои модули, парся `System.getProperty("java.class.path")` - то есть обычный `-cp`, без
+какого-либо самостоятельного сканирования директорий.
+
+Из-за этого механизм с `library_directory`-сканированием (см. предыдущий пункт) для него просто
+не работает - локально пропатченный `forge-*-client.jar` (объявлен в `libraries` с пустым
+`artifact.url`, т.к. его негде взять по сети) должен быть явно на `-cp`, а не только физически
+лежать в директории, которую никто не сканирует. Без этого падает `IllegalStateException: Could
+not find net/minecraft/client/Minecraft.class in classloader SecureModuleClassLoader[...]` -
+т.е. запускается, но не находит пропатченный игровой код вообще.
+
+Заодно всплыл смежный баг: `resolve_library_artifact` (`mojang.py`) не проверял, что
+`artifact.url` вообще непустой, и пытался скачать по `url=""` - `httpx.UnsupportedProtocol:
+Request URL is missing an 'http://' or 'https://' protocol`. Теперь такие записи считаются
+"недоступны для скачивания" (возвращается `None`, как и раньше для `rules`-запрета).
+
+Фикс - `common.py:uses_module_path()` проверяет, есть ли в **своих же** jvm-аргументах загрузчика
+буквальный `-p` (module path). Если нет (`ForgeBootstrap` и, возможно, будущие подобные
+механизмы) - `local_only_library_paths()` находит все объявленные библиотеки с пустым
+`artifact.url`, резолвит их физическое расположение прямо в `install_dir/libraries/<path>` (туда
+их положил установщик) и кладёт на `-cp` через `LoaderResult.extra_classpath_jars`. Если `-p`
+присутствует (`BootstrapLauncher`) - ничего дополнительно не добавляем, как и раньше, чтобы не
+вернуть дубли модулей из предыдущего пункта.
 
 ## Версии загрузчика по умолчанию
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -28,14 +28,43 @@ class LoaderResult:
 
     Forge and NeoForge ship as an installer.jar that produces its own libraries directory
     containing both regular maven artifacts *and* locally binary-patched client jars that have
-    no download URL at all - those are only ever discoverable by pointing `library_directory`
-    at that installer output and letting BootstrapLauncher scan it itself. Fabric (and vanilla)
-    use a flat classpath instead, so `library_directory` stays unused for them.
+    no download URL at all. Which bootstrap a given profile uses isn't a simple "older/newer MC
+    version" story - Forge and NeoForge forked apart at 1.20.1 and evolve their bootstraps on
+    separate, out-of-sync timelines. BootstrapLauncher-based profiles find those local-only jars
+    themselves by scanning `library_directory` (set via -DlibraryDirectory); "classpath-only"
+    bootstraps (e.g. Forge 1.20.6+'s ForgeBootstrap) don't scan anything - they just read
+    java.class.path - so those same jars have to be added to -cp explicitly via
+    `extra_classpath_jars` instead. Fabric (and vanilla) use a flat classpath and need neither.
     """
 
     profile: dict
     library_directory: Path | None = None
     include_client_jar: bool = True
+    extra_classpath_jars: list[Path] = field(default_factory=list)
+
+
+def uses_module_path(child_profile: dict) -> bool:
+    """Whether this loader's own jvm args include a literal -p (module path) argument. If they
+    don't, this is one of the "classpath-only" bootstraps (e.g. Forge 1.20.6+'s ForgeBootstrap) -
+    not necessarily a newer Minecraft version, just a different bootstrap lineage (see
+    LoaderResult's docstring)."""
+    return any(item == "-p" for item in child_profile.get("arguments", {}).get("jvm", []) if isinstance(item, str))
+
+
+def local_only_library_paths(child_profile: dict, install_dir: Path) -> list[Path]:
+    """Resolves declared libraries that have no download URL (installer-generated patched jars,
+    e.g. "net.minecraftforge:forge:<v>:client") to their actual location under
+    install_dir/libraries, for bootstraps that need them listed on the classpath directly rather
+    than discovering them via -DlibraryDirectory (see uses_module_path)."""
+
+    paths = []
+    for lib in child_profile.get("libraries", []):
+        artifact = lib.get("downloads", {}).get("artifact")
+        if artifact and artifact.get("path") and not artifact.get("url"):
+            candidate = install_dir / "libraries" / artifact["path"]
+            if candidate.exists():
+                paths.append(candidate)
+    return paths
 
 
 def _module_path_artifact_keys(child_profile: dict) -> set[str]:

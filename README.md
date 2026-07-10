@@ -1,4 +1,4 @@
-# modrig [v0.0.9](docs/changelog.md#v009)
+# modrig [v0.0.10](docs/changelog.md#v0010)
 
 Python-сервис (FastAPI) для автономного тестирования Minecraft-модов: скачивает нужную версию игры,
 загрузчик (Fabric/Forge/NeoForge) и моды, поднимает клиент в изолированном инстансе и следит за

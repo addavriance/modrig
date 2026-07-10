@@ -1,3 +1,11 @@
+# v0.0.10
+- Поддержан второй, несовместимый bootstrap-механизм Forge (`net.minecraftforge.bootstrap.ForgeBootstrap`,
+  с 1.20.6/50.x) - падал с `Could not find net/minecraft/client/Minecraft.class`, т.к. этот
+  механизм не сканирует `-DlibraryDirectory` и требует локально пропатченный client-jar явно на
+  classpath (см. [loaders](loaders.md#второй-несовместимый-bootstrap-механизм-forgebootstrap))
+- Заодно пофикшен смежный краш `httpx.UnsupportedProtocol` при попытке скачать библиотеку с
+  пустым `artifact.url` (такие теперь просто не резолвятся для скачивания)
+
 # v0.0.9
 - Пофикшен неверный выбор launch-профиля для NeoForge на MC 26.x: запрос версии-алиаса (`26.1`,
   резолвится установщиком в конкретный патч `26.1.2`) приводил к тому, что вместо профиля

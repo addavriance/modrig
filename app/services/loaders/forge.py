@@ -4,7 +4,13 @@ import httpx
 
 from app.config import settings
 from app.services.cache import register_cache_entry
-from app.services.loaders.common import LoaderResult, ensure_installed, merge_with_vanilla
+from app.services.loaders.common import (
+    LoaderResult,
+    ensure_installed,
+    local_only_library_paths,
+    merge_with_vanilla,
+    uses_module_path,
+)
 
 
 async def _get_promotions(client: httpx.AsyncClient) -> dict:
@@ -51,8 +57,13 @@ async def prepare(client: httpx.AsyncClient, vanilla_json: dict, mc_version: str
         install_dir / "versions" / version_id / f"{version_id}.json",
     )
 
+    # Newer "classpath-only" bootstraps (e.g. ForgeBootstrap on 1.20.6+) don't scan
+    # -DlibraryDirectory themselves, so the locally-patched client jar has to go on -cp directly.
+    extra_classpath_jars = [] if uses_module_path(forge_profile) else local_only_library_paths(forge_profile, install_dir)
+
     return LoaderResult(
         profile=profile,
         library_directory=install_dir / "libraries",
         include_client_jar=False,
+        extra_classpath_jars=extra_classpath_jars,
     )

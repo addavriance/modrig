@@ -23,16 +23,20 @@ else:
 async def get_version_manifest(client: httpx.AsyncClient) -> dict:
     r = await client.get(settings.mojang_manifest_url, timeout=settings.request_timeout)
     r.raise_for_status()
+
     return r.json()
 
 
 async def get_version_json(client: httpx.AsyncClient, mc_version: str) -> dict:
     manifest = await get_version_manifest(client)
     entry = next((v for v in manifest["versions"] if v["id"] == mc_version), None)
+
     if entry is None:
         raise ValueError(f"Unknown Minecraft version: {mc_version}")
+
     r = await client.get(entry["url"], timeout=settings.request_timeout)
     r.raise_for_status()
+
     return r.json()
 
 
@@ -40,14 +44,18 @@ def rule_permits(rules: list[dict] | None, os_name: str = CURRENT_OS, features: 
     """Last matching rule wins; default deny if any rules are present (mirrors the official launcher)."""
     if not rules:
         return True
+
     features = features or {}
     result = False
+
     for rule in rules:
         allow = rule.get("action") == "allow"
         matches = True
+
         os_rule = rule.get("os")
         if os_rule and os_rule.get("name") and os_rule.get("name") != os_name:
             matches = False
+
         feat_rule = rule.get("features")
         if feat_rule:
             for fk, fv in feat_rule.items():
@@ -67,17 +75,26 @@ def maven_coord_to_path(coord: str) -> str:
 
 
 def resolve_library_artifact(lib: dict) -> tuple[str, str, str | None] | None:
-    """Returns (relative_path, download_url, sha1) for a library's main artifact, or None if disallowed."""
+    """Returns (relative_path, download_url, sha1) for a library's main artifact, or None if
+    disallowed or not downloadable. Some Forge/NeoForge profiles list installer-generated
+    patched client jars as libraries with an empty artifact.url; those are resolved via
+    -DlibraryDirectory instead."""
     if not rule_permits(lib.get("rules")):
         return None
     downloads = lib.get("downloads")
+
     if downloads and downloads.get("artifact"):
         artifact = downloads["artifact"]
+
+        if not artifact.get("url"):
+            return None
         return artifact["path"], artifact["url"], artifact.get("sha1")
+
     if lib.get("url"):
         path = maven_coord_to_path(lib["name"])
         base = lib["url"] if lib["url"].endswith("/") else lib["url"] + "/"
         return path, base + path, lib.get("sha1")
+
     return None
 
 
@@ -85,17 +102,23 @@ def resolve_library_natives(lib: dict) -> tuple[str, str, str | None] | None:
     """Returns (relative_path, download_url, sha1) for a library's natives classifier for CURRENT_OS, if any."""
     if not rule_permits(lib.get("rules")):
         return None
+
     natives_map = lib.get("natives")
     downloads = lib.get("downloads")
+
     if not natives_map or not downloads:
         return None
+
     classifier_key = natives_map.get(CURRENT_OS)
     if not classifier_key:
         return None
+
     classifier_key = classifier_key.replace("${arch}", "64")
     classifier = downloads.get("classifiers", {}).get(classifier_key)
+
     if not classifier:
         return None
+
     return classifier["path"], classifier["url"], classifier.get("sha1")
 
 
@@ -107,34 +130,41 @@ def get_java_component(version_json: dict) -> str | None:
     """e.g. "java-runtime-delta" - Mojang's own name for the managed runtime this version wants,
     used to fetch it from Mojang's runtime index (see app/services/jre.py) rather than relying on
     a system-installed JDK."""
+
     return version_json.get("javaVersion", {}).get("component")
 
 
 async def download_client_jar(client: httpx.AsyncClient, version_json: dict, mc_version: str) -> Path:
     dest = settings.cache_dir / "versions" / mc_version / "client.jar"
     download = version_json["downloads"]["client"]
+
     await download_file(client, download["url"], dest, download.get("sha1"))
+
     await register_cache_entry(
         "version", mc_version, dest, download.get("sha1"), download.get("size"),
         java_major_version=get_java_major_version(version_json),
     )
+
     return dest
 
 
 async def download_libraries(client: httpx.AsyncClient, libraries: list[dict]) -> tuple[list[Path], list[Path]]:
     """Downloads regular libraries (classpath jars) and native-classifier jars into the shared cache.
     Returns (classpath_jar_paths, native_jar_paths)."""
+
     classpath: list[Path] = []
     native_jars: list[Path] = []
     lib_cache = settings.cache_dir / "libraries"
 
     async def handle(lib: dict) -> None:
         artifact = resolve_library_artifact(lib)
+
         if artifact:
             rel_path, url, sha1 = artifact
             dest = lib_cache / rel_path
             await download_file(client, url, dest, sha1)
             classpath.append(dest)
+
         natives = resolve_library_natives(lib)
         if natives:
             rel_path, url, sha1 = natives

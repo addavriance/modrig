@@ -210,7 +210,7 @@ class InstancePool:
             # BootstrapLauncher (Forge/NeoForge) turns every -cp entry into a candidate module and
             # aborts if the same path appears twice (e.g. vanilla and the loader can both declare
             # the same artifact under slightly different maven coordinate spellings).
-            classpath_jars = list(dict.fromkeys(classpath_jars))
+            classpath_jars = list(dict.fromkeys([*classpath_jars, *loader_result.extra_classpath_jars]))
             natives_dir = mojang.extract_natives(native_jars, mc_version)
             assets_dir = await mojang.download_assets(client, vanilla_json)
 
