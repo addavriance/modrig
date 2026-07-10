@@ -103,6 +103,13 @@ def get_java_major_version(version_json: dict) -> int | None:
     return version_json.get("javaVersion", {}).get("majorVersion")
 
 
+def get_java_component(version_json: dict) -> str | None:
+    """e.g. "java-runtime-delta" - Mojang's own name for the managed runtime this version wants,
+    used to fetch it from Mojang's runtime index (see app/services/jre.py) rather than relying on
+    a system-installed JDK."""
+    return version_json.get("javaVersion", {}).get("component")
+
+
 async def download_client_jar(client: httpx.AsyncClient, version_json: dict, mc_version: str) -> Path:
     dest = settings.cache_dir / "versions" / mc_version / "client.jar"
     download = version_json["downloads"]["client"]

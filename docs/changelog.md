@@ -1,3 +1,13 @@
+# v0.0.8
+- Автозагрузка управляемого JRE от Mojang (то же самое, что делает официальный лаунчер) - для
+  версии/лоадера, которым нужна Java поновее, `JAVA_HOME_<N>` больше не обязателен, modrig сам
+  тянет нужный `java-runtime-*` в `cache/runtimes/` (см. [architecture](architecture.md#выбор-jdk))
+
+# v0.0.7
+- Добавлена preflight-проверка версии Java перед запуском: если под нужный `javaVersion.majorVersion`
+  не настроен `JAVA_HOME_<N>` и дефолтная `java` слишком старая, инстанс падает сразу с понятной
+  ошибкой (`status: failed`) вместо непонятного краша JVM в середине старта (см. [architecture](architecture.md#выбор-jdk))
+
 # v0.0.6
 - Расширен фикс module-path дублей из v0.0.5: теперь ловит и разные версии одного и того же
   артефакта (vanilla asm-9.6 vs NeoForge asm-9.8) через сравнение по `group/artifact`, а не по

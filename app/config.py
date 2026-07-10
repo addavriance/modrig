@@ -63,15 +63,15 @@ class Settings(BaseModel):
         for d in (self.cache_dir, self.instances_dir, self.history_dir, self.local_mods_dir):
             d.mkdir(parents=True, exist_ok=True)
 
-    def resolve_java_bin(self, major_version: int | None) -> str:
-        """Maps a version json's javaVersion.majorVersion to a configured JDK home
-        (JAVA_HOME_<major> env vars); falls back to whatever "java" resolves to on PATH."""
+    def java_home_override(self, major_version: int | None) -> str | None:
+        """A user-configured JAVA_HOME_<major> for this exact major version, if any - takes
+        priority over the managed runtime Mojang would otherwise auto-download."""
         home = self.java_homes.get(major_version) if major_version is not None else None
         if home is not None:
             exe = home / "bin" / ("java.exe" if sys.platform.startswith("win") else "java")
             if exe.exists():
                 return str(exe)
-        return "java"
+        return None
 
 
 settings = Settings(base_dir=Path("data").resolve())

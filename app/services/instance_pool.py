@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from pathlib import Path
 from app.config import settings
 from app.db import get_db
 from app.models import CreateInstanceRequest, InstanceInfo, InstanceStatus, Loader, ModSource
-from app.services import history, launch, local_mods, mojang, modrinth
+from app.services import history, jre, launch, local_mods, mojang, modrinth
 from app.services.auth import build_offline_profile
 from app.services.http import new_client
 from app.services.loaders import fabric, forge, neoforge
@@ -28,6 +29,26 @@ logger = logging.getLogger(__name__)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def _detect_java_major_version(java_bin: str) -> int | None:
+    """Runs `<java_bin> -version` and parses its major version. Used to catch a required-vs-actual
+    JDK mismatch *before* spawning the real game process - otherwise it only surfaces as a cryptic
+    "Unrecognized option" (or similar) deep in the JVM's own startup failure, once resolve_java_bin
+    has already silently fallen back to a too-old default "java" for lack of a matching JAVA_HOME_<N>."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            java_bin, "-version", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        output, _ = await process.communicate()
+    except FileNotFoundError:
+        return None
+
+    match = re.search(r'version "(\d+)(?:\.(\d+))?', output.decode("utf-8", errors="replace"))
+    if not match:
+        return None
+    major = int(match.group(1))
+    return int(match.group(2)) if major == 1 and match.group(2) else major  # legacy "1.8.0_..." style
 
 
 @dataclass
@@ -156,12 +177,36 @@ class InstancePool:
             await self._persist(instance)
 
             vanilla_json = await mojang.get_version_json(client, mc_version)
-            java_bin = settings.resolve_java_bin(mojang.get_java_major_version(vanilla_json))
+            required_java = mojang.get_java_major_version(vanilla_json)
+            java_component = mojang.get_java_component(vanilla_json)
+
+            # JAVA_HOME_<N> (if configured) always wins; otherwise fetch Mojang's own managed
+            # runtime for this version - same thing the official launcher does - instead of
+            # requiring the user to hunt down and install a matching system JDK themselves.
+            java_bin = settings.java_home_override(required_java)
+            if java_bin is None and java_component:
+                try:
+                    java_bin = str(await jre.ensure_runtime(client, java_component))
+                except Exception:
+                    logger.exception("Failed to fetch managed runtime %s, falling back to PATH java", java_component)
+            if java_bin is None:
+                java_bin = "java"
+
+            if required_java is not None:
+                detected_java = await _detect_java_major_version(java_bin)
+                if detected_java is not None and detected_java < required_java:
+                    raise RuntimeError(
+                        f"Minecraft {mc_version} needs Java {required_java}+, but '{java_bin}' resolves to "
+                        f"Java {detected_java}. Set JAVA_HOME_{required_java} to a Java {required_java}+ "
+                        f"install and restart modrig."
+                    )
+
             loader_result = await loader_module.prepare(client, vanilla_json, mc_version, loader_version)
             profile = loader_result.profile
 
             client_jar = await mojang.download_client_jar(client, vanilla_json, mc_version)
             classpath_jars, native_jars = await mojang.download_libraries(client, profile["libraries"])
+
             # BootstrapLauncher (Forge/NeoForge) turns every -cp entry into a candidate module and
             # aborts if the same path appears twice (e.g. vanilla and the loader can both declare
             # the same artifact under slightly different maven coordinate spellings).
