@@ -28,6 +28,20 @@ CREATE TABLE IF NOT EXISTS runs (
     exit_code INTEGER,
     error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS local_mods (
+    mod_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    loader TEXT NOT NULL,
+    mc_version_range TEXT,
+    display_name TEXT,
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    sha1 TEXT,
+    size INTEGER,
+    uploaded_at TEXT NOT NULL,
+    PRIMARY KEY (mod_id, version)
+);
 """
 
 _db: aiosqlite.Connection | None = None

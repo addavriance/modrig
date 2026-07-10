@@ -36,11 +36,15 @@ class Settings(BaseModel):
         return self.base_dir / "history"
 
     @property
+    def local_mods_dir(self) -> Path:
+        return self.base_dir / "local_mods"
+
+    @property
     def db_path(self) -> Path:
         return self.base_dir / "modrig.db"
 
     def ensure_dirs(self) -> None:
-        for d in (self.cache_dir, self.instances_dir, self.history_dir):
+        for d in (self.cache_dir, self.instances_dir, self.history_dir, self.local_mods_dir):
             d.mkdir(parents=True, exist_ok=True)
 
 

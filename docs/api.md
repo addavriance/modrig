@@ -13,15 +13,22 @@
   "loader": "fabric",          // "fabric" | "forge" | "neoforge"
   "loader_version": null,       // необязательно - если не задано, берётся latest/recommended
   "mods": [
-    {"project_id": "fabric-api", "version_id": null}
+    {"project_id": "fabric-api", "version_id": null},
+    {"project_id": "mymod", "source": "local"}
   ],
   "ephemeral": true
 }
 ```
 
-`mods[].project_id` - slug или id проекта на Modrinth. `version_id` - если не задан, берётся
-последняя версия, совместимая с `mc_version`/`loader`. Required-зависимости мода резолвятся и
-докачиваются автоматически (рекурсивно).
+`mods[].source` - `"modrinth"` (по умолчанию) или `"local"`.
+
+- `source: "modrinth"` - `project_id` это slug/id проекта на Modrinth, `version_id` - если не
+  задан, берётся последняя версия, совместимая с `mc_version`/`loader`. Required-зависимости
+  мода резолвятся и докачиваются автоматически (рекурсивно).
+- `source: "local"` - `project_id` это `mod_id` из локально запабленного мода (см.
+  `POST /mods/local`), `version_id` - если не задан, берётся самая свежая опубликованная версия
+  этого `mod_id`. Зависимости локального мода **не** резолвятся автоматически - если он тянет
+  что-то ещё, добавь это отдельным элементом `mods[]`.
 
 Ответ - `InstanceInfo` (см. ниже), `id` нужен для всех остальных запросов.
 
@@ -90,3 +97,40 @@
 ## `GET /cache/mods`
 
 Скачанные файлы модов (kind `mod`), ключ - sha1.
+
+## `POST /mods/local`
+
+Паблишит незапаблишенный мод локально. `multipart/form-data`, поле `file` - jar мода.
+
+```
+curl -F "file=@build/libs/mymod-1.2.0.jar" http://localhost:8000/mods/local
+```
+
+`mod_id`, `version`, `loader` (`fabric`/`forge`/`neoforge`) и `mc_version_range` резолвятся из
+самого jar'а - `fabric.mod.json` для Fabric, `META-INF/(neoforge.)mods.toml` для Forge/NeoForge.
+Если мод с таким же `(mod_id, version)` уже был опубликован - файл и запись **заменяются**
+(старый файл удаляется), повторная публикация той же версии - штатный сценарий при итеративной
+разработке. Ответ:
+
+```json
+{
+  "mod_id": "mymod",
+  "version": "1.2.0",
+  "loader": "fabric",
+  "mc_version_range": "~1.20.1",
+  "display_name": "My Mod",
+  "replaced": false
+}
+```
+
+422, если файл не zip/jar или в нём нет `fabric.mod.json`/`mods.toml`.
+
+## `GET /mods/local`
+
+Список всех локально опубликованных модов (та самая "отметка" - в отличие от `/cache/mods` эти
+никогда не резолвятся через Modrinth, только напрямую по `mod_id`/`version` из `POST /instances`
+с `source: "local"`).
+
+## `DELETE /mods/local/{mod_id}/{version}`
+
+Удаляет опубликованную версию мода с диска и из реестра. 404, если такой пары нет.

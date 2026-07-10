@@ -12,6 +12,7 @@ app/services/instance_pool.py  # оркестрация: prepare -> download -> 
 app/services/loaders/          # Fabric/Forge/NeoForge - см. loaders.md
 app/services/mojang.py         # piston-meta: version manifest, client.jar, библиотеки, ассеты, natives
 app/services/modrinth.py       # резолвер модов + рекурсивные required-зависимости
+app/services/local_mods.py     # локально запабленные моды (POST /mods/local) - парсинг jar'а, замена по (mod_id, version)
 app/services/launch.py         # сборка java-командной строки (подстановка ${...}, OS-правила)
 app/services/auth.py           # offline-авторизация (оффлайн UUID, как у ванильного клиента)
 app/services/cache.py          # реестр shared-кэша поверх SQLite (для /cache/*)
@@ -27,7 +28,8 @@ app/config.py                  # Settings (пути, урлы, таймауты)
 
 1. **preparing → downloading** - резолвится версия загрузчика, тянется vanilla version json,
    загрузчик готовит свой профиль (см. `loaders.md`), качаются client.jar/библиотеки/ассеты/natives,
-   резолвятся и качаются моды с Modrinth.
+   резолвятся и качаются моды - с Modrinth (`source: "modrinth"`) и/или из локальной БД
+   (`source: "local"`, см. `POST /mods/local`).
 2. **running** - под семафором `max_concurrent_instances` собирается java-команда и стартует
    процесс; stdout/stderr пишутся построчно в `history/<id>/run.log` (не в instance-директорию -
    это важно для эфемерных инстансов, см. ниже).
@@ -52,6 +54,16 @@ app/config.py                  # Settings (пути, урлы, таймауты)
 
 `GET /cache/versions` и `GET /cache/mods` читают реестр этих записей из SQLite (таблица
 `cache_entries`), а не сканируют диск.
+
+## Локальные моды
+
+`data/local_mods/<mod_id>/<version>/<filename>.jar` - **не** часть shared-кэша: это не то, что
+можно перекачать заново, а то, что пользователь сам туда положил через `POST /mods/local`
+(незапаблишенные/WIP моды - основной сценарий использования сервиса). Ключ - `(mod_id, version)`
+из собственного манифеста мода (`fabric.mod.json` / `META-INF/(neoforge.)mods.toml`), не
+content-hash: повторная публикация той же пары **заменяет** файл и запись в таблице
+`local_mods`. `ModRef.source: "local"` в `POST /instances` резолвит мод напрямую отсюда, минуя
+Modrinth целиком.
 
 ## Конкурентность
 

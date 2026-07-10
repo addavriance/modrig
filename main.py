@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api.cache import router as cache_router
 from app.api.instances import router as instances_router
+from app.api.mods import router as mods_router
 from app.config import settings
 from app.db import close_db, init_db
 
@@ -22,6 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="modrig", description="Autonomous Minecraft mod test server", lifespan=lifespan)
 app.include_router(instances_router)
 app.include_router(cache_router)
+app.include_router(mods_router)
 
 
 @app.get("/health")

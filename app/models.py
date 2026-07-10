@@ -22,9 +22,27 @@ class InstanceStatus(str, Enum):
     failed = "failed"
 
 
+class ModSource(str, Enum):
+    modrinth = "modrinth"
+    local = "local"
+
+
 class ModRef(BaseModel):
     project_id: str
     version_id: Optional[str] = None
+    # source="local" pulls (project_id, version_id) from the locally-published mod
+    source: ModSource = ModSource.modrinth # optional
+
+
+class LocalModInfo(BaseModel):
+    mod_id: str
+    version: str
+    loader: Loader
+    mc_version_range: Optional[str] = None
+    display_name: Optional[str] = None
+    filename: str
+    size: Optional[int] = None
+    uploaded_at: str
 
 
 class CreateInstanceRequest(BaseModel):

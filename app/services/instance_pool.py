@@ -11,8 +11,8 @@ from pathlib import Path
 
 from app.config import settings
 from app.db import get_db
-from app.models import CreateInstanceRequest, InstanceInfo, InstanceStatus, Loader
-from app.services import history, launch, mojang, modrinth
+from app.models import CreateInstanceRequest, InstanceInfo, InstanceStatus, Loader, ModSource
+from app.services import history, launch, local_mods, mojang, modrinth
 from app.services.auth import build_offline_profile
 from app.services.http import new_client
 from app.services.loaders import fabric, forge, neoforge
@@ -168,8 +168,16 @@ class InstancePool:
             natives_dir = mojang.extract_natives(native_jars, mc_version)
             assets_dir = await mojang.download_assets(client, vanilla_json)
 
-            mod_versions = await modrinth.resolve_mods(client, req.mods, mc_version, req.loader.value)
-            mod_files = await modrinth.download_mod_files(client, mod_versions)
+            modrinth_refs = [m for m in req.mods if m.source == ModSource.modrinth]
+            local_refs = [m for m in req.mods if m.source == ModSource.local]
+
+            mod_files: list[tuple[str, Path]] = []
+
+            if modrinth_refs:
+                mod_versions = await modrinth.resolve_mods(client, modrinth_refs, mc_version, req.loader.value)
+                mod_files += await modrinth.download_mod_files(client, mod_versions)
+            if local_refs:
+                mod_files += await local_mods.resolve_local_mods(local_refs)
 
             await self._launch(
                 instance, profile, mc_version, client_jar, classpath_jars, natives_dir, assets_dir, mod_files,
