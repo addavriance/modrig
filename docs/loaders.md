@@ -61,6 +61,22 @@ Vanilla и Forge/NeoForge иногда объявляют одну и ту же 
 (он сам строит `UnionFileSystem` из classpath-записей). Поэтому classpath дедуплицируется по
 итоговому пути файла, а не по имени координаты (`instance_pool.py`, `dict.fromkeys(classpath_jars)`).
 
+### Дубли между classpath и module path
+
+Отдельная история от предыдущей: библиотеки из литерального `-p` аргумента (bootstraplauncher,
+securejarhandler, `asm*`, `JarJarFileSystems`) объявлены загрузчиком **и** в `-p`, **и** в
+обычном списке `libraries` профиля. Раз они уже в `include_child_libraries=True`, они попадали
+и на `-cp` тоже - какое-то время это молча проглатывалось, но более новый `securejarhandler`
+(встречается уже на некоторых NeoForge-сборках) начал строго падать с
+`IllegalStateException: Module named X was already on the JVMs module path` на такой двойной
+регистрации одного и того же модуля.
+
+Фикс - `merge_with_vanilla` парсит литеральное значение `-p` из **своих же** (ещё не
+подставленных) jvm-аргументов загрузчика (`_module_path_basenames`, ищет `-p` и разбивает
+следующую за ним строку по `${classpath_separator}`), получает набор basename'ов jar'ов, что уже
+на module path, и не добавляет такие библиотеки на classpath повторно (`_library_basename` +
+проверка в `merge_with_vanilla`). Они всё равно доступны игре - просто через `-p`, а не `-cp`.
+
 ## Версии загрузчика по умолчанию
 
 - **Fabric** - берётся первая `stable: true` запись из `meta.fabricmc.net`.

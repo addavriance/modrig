@@ -38,6 +38,39 @@ class LoaderResult:
     include_client_jar: bool = True
 
 
+def _module_path_basenames(child_profile: dict) -> set[str]:
+    """Extracts the jar basenames already referenced by the loader's own literal -p (module path)
+    JVM argument (bootstraplauncher, securejarhandler, asm*, JarJarFileSystems, ...). Those must
+    not *also* end up on the classpath - some securejarhandler builds are strict enough to throw
+    "Module X was already on the JVMs module path" if the same module is registered twice."""
+    basenames: set[str] = set()
+    take_next = False
+    for item in child_profile.get("arguments", {}).get("jvm", []):
+        if not isinstance(item, str):
+            take_next = False
+            continue
+        if take_next:
+            for part in item.split("${classpath_separator}"):
+                name = part.rsplit("/", 1)[-1]
+                if name:
+                    basenames.add(name)
+            take_next = False
+        elif item == "-p":
+            take_next = True
+    return basenames
+
+
+def _library_basename(lib: dict) -> str | None:
+    artifact = lib.get("downloads", {}).get("artifact")
+    if artifact and artifact.get("path"):
+        return artifact["path"].rsplit("/", 1)[-1]
+    if lib.get("name"):
+        from app.services.mojang import maven_coord_to_path
+
+        return maven_coord_to_path(lib["name"]).rsplit("/", 1)[-1]
+    return None
+
+
 def merge_with_vanilla(vanilla: dict, child_profile: dict, include_child_libraries: bool = True) -> dict:
     """Merges a loader's launch profile (which declares "inheritsFrom") with its parent vanilla
     version json, the same way the official launcher resolves inheritance chains."""
@@ -48,10 +81,14 @@ def merge_with_vanilla(vanilla: dict, child_profile: dict, include_child_librari
 
     merged_libs = list(vanilla.get("libraries", []))
     if include_child_libraries:
+        module_path_basenames = _module_path_basenames(child_profile)
         existing_names = {lib.get("name") for lib in merged_libs}
         for lib in child_profile.get("libraries", []):
-            if lib.get("name") not in existing_names:
-                merged_libs.append(lib)
+            if lib.get("name") in existing_names:
+                continue
+            if _library_basename(lib) in module_path_basenames:
+                continue
+            merged_libs.append(lib)
 
     merged["libraries"] = merged_libs
 
