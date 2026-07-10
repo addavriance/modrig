@@ -1,3 +1,8 @@
+# v0.0.6
+- Расширен фикс module-path дублей из v0.0.5: теперь ловит и разные версии одного и того же
+  артефакта (vanilla asm-9.6 vs NeoForge asm-9.8) через сравнение по `group/artifact`, а не по
+  точному имени jar-файла
+
 # v0.0.5
 - Пофикшена `IllegalStateException: Module named X was already on the JVMs module path` на
   некоторых NeoForge-сборках (библиотека попадала и на classpath, и на module path одновременно,

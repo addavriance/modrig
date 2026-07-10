@@ -38,37 +38,52 @@ class LoaderResult:
     include_client_jar: bool = True
 
 
-def _module_path_basenames(child_profile: dict) -> set[str]:
-    """Extracts the jar basenames already referenced by the loader's own literal -p (module path)
-    JVM argument (bootstraplauncher, securejarhandler, asm*, JarJarFileSystems, ...). Those must
-    not *also* end up on the classpath - some securejarhandler builds are strict enough to throw
-    "Module X was already on the JVMs module path" if the same module is registered twice."""
-    basenames: set[str] = set()
+def _module_path_artifact_keys(child_profile: dict) -> set[str]:
+    """Extracts "<group-path>/<artifactId>" keys (version-agnostic!) for every jar referenced by
+    the loader's own literal -p (module path) JVM argument, by parsing out the
+    ${library_directory}/<group-path>/<artifactId>/<version>/<file>.jar structure and dropping the
+    version/filename segments.
+
+    Any library matching one of these - whether declared by vanilla or by the loader itself -
+    must not *also* land on the classpath: the JVM module system rejects two modules sharing a
+    name regardless of version, so even a *different* version of the same artifact collides."""
+
+    keys: set[str] = set()
     take_next = False
+
     for item in child_profile.get("arguments", {}).get("jvm", []):
         if not isinstance(item, str):
             take_next = False
             continue
+
         if take_next:
             for part in item.split("${classpath_separator}"):
-                name = part.rsplit("/", 1)[-1]
-                if name:
-                    basenames.add(name)
+                path = part.split("${library_directory}/", 1)[-1]
+                segments = path.split("/")
+
+                if len(segments) >= 3:
+                    keys.add("/".join(segments[:-2]))  # drop <version>/<file>.jar
+
             take_next = False
         elif item == "-p":
             take_next = True
-    return basenames
+    return keys
 
 
-def _library_basename(lib: dict) -> str | None:
-    artifact = lib.get("downloads", {}).get("artifact")
-    if artifact and artifact.get("path"):
-        return artifact["path"].rsplit("/", 1)[-1]
-    if lib.get("name"):
-        from app.services.mojang import maven_coord_to_path
+def _artifact_key(lib: dict) -> str | None:
+    """"<group-path>/<artifactId>" for a library's own maven coordinate, e.g.
+    "org.ow2.asm:asm:9.6" -> "org/ow2/asm/asm" - matches the format _module_path_artifact_keys
+    extracts from -p, deliberately ignoring version/classifier."""
 
-        return maven_coord_to_path(lib["name"]).rsplit("/", 1)[-1]
-    return None
+    name = lib.get("name")
+    if not name:
+        return None
+
+    parts = name.split(":")
+    if len(parts) < 2:
+        return None
+
+    return "/".join([*parts[0].split("."), parts[1]])
 
 
 def merge_with_vanilla(vanilla: dict, child_profile: dict, include_child_libraries: bool = True) -> dict:
@@ -79,14 +94,15 @@ def merge_with_vanilla(vanilla: dict, child_profile: dict, include_child_librari
     merged["id"] = child_profile.get("id", vanilla.get("id"))
     merged["mainClass"] = child_profile["mainClass"]
 
-    merged_libs = list(vanilla.get("libraries", []))
+    module_path_keys = _module_path_artifact_keys(child_profile)
+
+    merged_libs = [lib for lib in vanilla.get("libraries", []) if _artifact_key(lib) not in module_path_keys]
     if include_child_libraries:
-        module_path_basenames = _module_path_basenames(child_profile)
         existing_names = {lib.get("name") for lib in merged_libs}
         for lib in child_profile.get("libraries", []):
             if lib.get("name") in existing_names:
                 continue
-            if _library_basename(lib) in module_path_basenames:
+            if _artifact_key(lib) in module_path_keys:
                 continue
             merged_libs.append(lib)
 

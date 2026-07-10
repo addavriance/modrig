@@ -71,11 +71,19 @@ securejarhandler, `asm*`, `JarJarFileSystems`) объявлены загрузч
 `IllegalStateException: Module named X was already on the JVMs module path` на такой двойной
 регистрации одного и того же модуля.
 
+Первая версия фикса сравнивала конкретные basename'ы jar'ов (`asm-9.8.jar` и т.п.) - помогло не
+до конца: на 1.21.6 всплыл вариант, где **vanilla** version json сам объявляет
+`org.ow2.asm:asm:9.6` (Mojang использует ASM для чего-то внутреннего), а NeoForge независимо
+несёт на `-p` `asm:9.8`. Разные файлы, разные версии - но JVM ругается на **имя модуля**
+(`org.objectweb.asm`), а не на версию или путь, так что сравнение по basename'у их не ловит.
+
 Фикс - `merge_with_vanilla` парсит литеральное значение `-p` из **своих же** (ещё не
-подставленных) jvm-аргументов загрузчика (`_module_path_basenames`, ищет `-p` и разбивает
-следующую за ним строку по `${classpath_separator}`), получает набор basename'ов jar'ов, что уже
-на module path, и не добавляет такие библиотеки на classpath повторно (`_library_basename` +
-проверка в `merge_with_vanilla`). Они всё равно доступны игре - просто через `-p`, а не `-cp`.
+подставленных) jvm-аргументов загрузчика (`_module_path_artifact_keys`: ищет `-p`, разбивает
+следующую за ним строку по `${classpath_separator}`, из каждого пути
+`${library_directory}/<group-path>/<artifactId>/<version>/<file>.jar` берёт только
+`<group-path>/<artifactId>`, отбрасывая версию и имя файла). Дальше **и** vanilla-, **и**
+загрузчик-декларированные библиотеки с таким же `group/artifact` (`_artifact_key`) не
+добавляются на `-cp`, независимо от их версии - они всё равно доступны игре через `-p`.
 
 ## Версии загрузчика по умолчанию
 
