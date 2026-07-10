@@ -152,18 +152,31 @@ async def run_installer(installer_jar: Path, install_dir: Path, java_bin: str = 
 
 
 def find_produced_version(install_dir: Path, exclude_id: str) -> tuple[str, dict]:
-    """Locates the loader's own version json under install_dir/versions/, skipping the plain
-    vanilla one (named exactly like the Minecraft version) that the installer also writes there."""
+    """Locates the loader's version.json under install_dir/versions/, skipping the vanilla one.
+
+    Directory names aren't reliable because the installer may resolve the requested Minecraft
+    version to a different concrete release. Instead, we identify the loader profile by the
+    presence of "inheritsFrom"; name-based exclusion is only a fallback."""
 
     import json
 
     versions_dir = install_dir / "versions"
+    candidates = []
+
     for candidate_dir in sorted(versions_dir.iterdir()) if versions_dir.exists() else []:
-        if not candidate_dir.is_dir() or candidate_dir.name == exclude_id:
+        if not candidate_dir.is_dir():
             continue
+
         json_path = candidate_dir / f"{candidate_dir.name}.json"
         if json_path.exists():
-            return candidate_dir.name, json.loads(json_path.read_text(encoding="utf-8"))
+            candidates.append((candidate_dir.name, json.loads(json_path.read_text(encoding="utf-8"))))
+
+    for name, data in candidates:
+        if "inheritsFrom" in data:
+            return name, data
+    for name, data in candidates:
+        if name != exclude_id:
+            return name, data
 
     raise RuntimeError(f"Installer did not produce a version profile under {versions_dir}")
 
