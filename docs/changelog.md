@@ -1,3 +1,10 @@
+# v0.0.11
+- Расширен дедуп vanilla/loader библиотек из v0.0.6: раньше срабатывал только для того, что явно
+  упомянуто в `-p` (module path), поэтому Fabric (у него `-p` вообще нет) падал с дублем
+  `org.ow2.asm:asm` (vanilla 9.6 vs Fabric Loader 9.10.1) - `LoaderUtil.verifyClasspath` детектил
+  дубль класса. Теперь дедуп по `group/artifact` применяется всегла, версия загрузчика побеждает
+  безусловно (см. [loaders](loaders.md#дубли-между-vanilla-и-loader-на-обычном-classpath-без-module-path-вообще))
+
 # v0.0.10
 - Поддержан второй, несовместимый bootstrap-механизм Forge (`net.minecraftforge.bootstrap.ForgeBootstrap`,
   с 1.20.6/50.x) - падал с `Could not find net/minecraft/client/Minecraft.class`, т.к. этот

@@ -124,11 +124,19 @@ def merge_with_vanilla(vanilla: dict, child_profile: dict, include_child_librari
     merged["mainClass"] = child_profile["mainClass"]
 
     module_path_keys = _module_path_artifact_keys(child_profile)
+    child_libs = child_profile.get("libraries", []) if include_child_libraries else []
+    # Vanilla sometimes declares its own pinned version of a library the loader also needs, so name-based dedup below doesn't catch it
+    # The loader's own declared version always wins for a shared group/artifact.
+    child_artifact_keys = {key for lib in child_libs if (key := _artifact_key(lib)) is not None}
 
-    merged_libs = [lib for lib in vanilla.get("libraries", []) if _artifact_key(lib) not in module_path_keys]
+    merged_libs = [
+        lib
+        for lib in vanilla.get("libraries", [])
+        if _artifact_key(lib) not in module_path_keys and _artifact_key(lib) not in child_artifact_keys
+    ]
     if include_child_libraries:
         existing_names = {lib.get("name") for lib in merged_libs}
-        for lib in child_profile.get("libraries", []):
+        for lib in child_libs:
             if lib.get("name") in existing_names:
                 continue
             if _artifact_key(lib) in module_path_keys:
