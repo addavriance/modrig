@@ -99,11 +99,18 @@ def resolve_library_natives(lib: dict) -> tuple[str, str, str | None] | None:
     return classifier["path"], classifier["url"], classifier.get("sha1")
 
 
+def get_java_major_version(version_json: dict) -> int | None:
+    return version_json.get("javaVersion", {}).get("majorVersion")
+
+
 async def download_client_jar(client: httpx.AsyncClient, version_json: dict, mc_version: str) -> Path:
     dest = settings.cache_dir / "versions" / mc_version / "client.jar"
     download = version_json["downloads"]["client"]
     await download_file(client, download["url"], dest, download.get("sha1"))
-    await register_cache_entry("version", mc_version, dest, download.get("sha1"), download.get("size"))
+    await register_cache_entry(
+        "version", mc_version, dest, download.get("sha1"), download.get("size"),
+        java_major_version=get_java_major_version(version_json),
+    )
     return dest
 
 

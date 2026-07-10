@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS cache_entries (
     path TEXT NOT NULL,
     sha1 TEXT,
     size INTEGER,
+    java_major_version INTEGER,
     created_at TEXT NOT NULL,
     PRIMARY KEY (kind, key)
 );
@@ -54,6 +55,11 @@ async def init_db() -> aiosqlite.Connection:
 
     _db = await aiosqlite.connect(settings.db_path)
     await _db.executescript(_SCHEMA)
+    # CREATE TABLE IF NOT EXISTS won't add new columns to a db from before this column existed.
+    try:
+        await _db.execute("ALTER TABLE cache_entries ADD COLUMN java_major_version INTEGER")
+    except aiosqlite.OperationalError:
+        pass
     await _db.commit()
 
     return _db

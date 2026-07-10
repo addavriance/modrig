@@ -6,14 +6,22 @@ from pathlib import Path
 from app.db import get_db
 
 
-async def register_cache_entry(kind: str, key: str, path: Path, sha1: str | None = None, size: int | None = None) -> None:
+async def register_cache_entry(
+    kind: str,
+    key: str,
+    path: Path,
+    sha1: str | None = None,
+    size: int | None = None,
+    java_major_version: int | None = None,
+) -> None:
     db = get_db()
     if size is None and path.exists():
         size = path.stat().st_size
 
     await db.execute(
-        "INSERT OR REPLACE INTO cache_entries(kind, key, path, sha1, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (kind, key, str(path), sha1, size, datetime.now(timezone.utc).isoformat()),
+        """INSERT OR REPLACE INTO cache_entries(kind, key, path, sha1, size, java_major_version, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (kind, key, str(path), sha1, size, java_major_version, datetime.now(timezone.utc).isoformat()),
     )
     await db.commit()
 
@@ -23,11 +31,20 @@ async def list_cache_entries(kinds: list[str]) -> list[dict]:
     placeholders = ",".join("?" for _ in kinds)
 
     cur = await db.execute(
-        f"SELECT kind, key, path, sha1, size, created_at FROM cache_entries WHERE kind IN ({placeholders}) ORDER BY created_at DESC",
+        f"""SELECT kind, key, path, sha1, size, java_major_version, created_at
+            FROM cache_entries WHERE kind IN ({placeholders}) ORDER BY created_at DESC""",
         kinds,
     )
     rows = await cur.fetchall()
     return [
-        {"kind": r[0], "key": r[1], "path": r[2], "sha1": r[3], "size": r[4], "created_at": r[5]}
+        {
+            "kind": r[0],
+            "key": r[1],
+            "path": r[2],
+            "sha1": r[3],
+            "size": r[4],
+            "java_major_version": r[5],
+            "created_at": r[6],
+        }
         for r in rows
     ]

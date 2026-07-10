@@ -91,8 +91,9 @@
 
 ## `GET /cache/versions`
 
-Записи реестра кэша с kind `version` (client.jar), `loader_profile` (Fabric/Forge/NeoForge
-профили) и `asset_index`.
+Записи реестра кэша с kind `version` (client.jar - для этого kind ещё есть поле
+`java_major_version`, взятое из vanilla version json, см. `architecture.md#выбор-jdk`),
+`loader_profile` (Fabric/Forge/NeoForge профили) и `asset_index`.
 
 ## `GET /cache/mods`
 

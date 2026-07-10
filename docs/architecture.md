@@ -17,8 +17,8 @@ app/services/launch.py         # сборка java-командной строк
 app/services/auth.py           # offline-авторизация (оффлайн UUID, как у ванильного клиента)
 app/services/cache.py          # реестр shared-кэша поверх SQLite (для /cache/*)
 app/services/history.py        # логи/крэши вне instance-директории
-app/db.py                      # SQLite: cache_entries, runs
-app/config.py                  # Settings (пути, урлы, таймауты)
+app/db.py                      # SQLite: cache_entries, runs, local_mods
+app/config.py                  # Settings (пути, урлы, таймауты, java_homes из JAVA_HOME_<N>)
 ```
 
 ## Жизненный цикл инстанса
@@ -64,6 +64,18 @@ app/config.py                  # Settings (пути, урлы, таймауты)
 content-hash: повторная публикация той же пары **заменяет** файл и запись в таблице
 `local_mods`. `ModRef.source: "local"` в `POST /instances` резолвит мод напрямую отсюда, минуя
 Modrinth целиком.
+
+## Выбор JDK
+
+Каждый vanilla version json несёт `javaVersion.majorVersion` (например `21` для 1.21.1, `17`
+для 1.20.1) - тянем его вместе с остальным version json и резолвим java-бинарник под конкретную
+версию через `Settings.resolve_java_bin` (`app/config.py`): смотрим `java_homes[majorVersion]`
+(заполняется из переменных окружения `JAVA_HOME_<N>`, например `JAVA_HOME_21=C:\...\jdk-21`) и
+если там есть `bin/java(.exe)` - используем его; иначе просто `"java"` из `PATH`, как раньше.
+Так один и тот же сервис может гонять и старые версии (Java 8/17), и новые (Java 21+), если
+дефолтная `java` в `PATH` не подходит всем сразу. Резолвнутое значение попадает в
+`launch.build_command(java_bin=...)` вместо дефолтного `"java"`; сам major version заодно
+сохраняется в реестре кэша (`GET /cache/versions` → `java_major_version`) для справки.
 
 ## Конкурентность
 

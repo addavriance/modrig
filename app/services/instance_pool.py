@@ -156,6 +156,7 @@ class InstancePool:
             await self._persist(instance)
 
             vanilla_json = await mojang.get_version_json(client, mc_version)
+            java_bin = settings.resolve_java_bin(mojang.get_java_major_version(vanilla_json))
             loader_result = await loader_module.prepare(client, vanilla_json, mc_version, loader_version)
             profile = loader_result.profile
 
@@ -183,6 +184,7 @@ class InstancePool:
                 instance, profile, mc_version, client_jar, classpath_jars, natives_dir, assets_dir, mod_files,
                 library_directory=loader_result.library_directory or (settings.cache_dir / "libraries"),
                 include_client_jar=loader_result.include_client_jar,
+                java_bin=java_bin,
             )
 
     async def _launch(
@@ -196,6 +198,7 @@ class InstancePool:
         assets_dir,
         mod_files,
         library_directory,
+        java_bin: str,
         include_client_jar: bool,
     ) -> None:
         instance_dir = instance.dir
@@ -218,6 +221,7 @@ class InstancePool:
             classpath_jars=classpath_jars,
             client_jar=client_jar,
             auth=auth,
+            java_bin=java_bin,
             library_directory=library_directory,
             include_client_jar=include_client_jar,
         )
